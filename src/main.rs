@@ -61,6 +61,10 @@ fn local_parity_coverage(spec: &CodeSpec) -> CodeResult<std::collections::HashMa
     return Ok(result);
 }
 
+fn local_parity_for_data_chunk(spec: &CodeSpec, di: DataChunkIndex) -> DataChunkIndex {
+    return di / spec.local_parities;
+}
+
 fn is_recoverable(spec: &CodeSpec, erasures: &Vec<ChunkPosition>) -> bool {
     let needed = spec.data_chunks;
 
@@ -192,11 +196,58 @@ mod tests {
         }        
 
         // Some 4-failures are recoverable
+        assert!(super::is_recoverable(
+            &spec_622, &vec![ChunkPosition::Data(0),
+                             ChunkPosition::Data(3),
+                             ChunkPosition::LocalParity(0),
+                             ChunkPosition::LocalParity(1)]));
+
+        assert!(super::is_recoverable(
+            &spec_622, &vec![ChunkPosition::Data(0),
+                             ChunkPosition::Data(3),
+                             ChunkPosition::GlobalParity(0),
+                             ChunkPosition::GlobalParity(1)]));
+
+        assert!(super::is_recoverable(
+            &spec_622, &vec![ChunkPosition::LocalParity(0),
+                             ChunkPosition::LocalParity(1),
+                             ChunkPosition::GlobalParity(0),
+                             ChunkPosition::GlobalParity(1)]));
+
+        assert!(super::is_recoverable(
+            &spec_622, &vec![ChunkPosition::Data(0),
+                             ChunkPosition::Data(3),
+                             ChunkPosition::LocalParity(0),
+                             ChunkPosition::GlobalParity(1)]));
+
+        assert!(super::is_recoverable(
+            &spec_622, &vec![ChunkPosition::Data(0),
+                             ChunkPosition::Data(3),
+                             ChunkPosition::LocalParity(0),
+                             ChunkPosition::GlobalParity(0)]));
+
+        // Two erasures in first locality
+        assert!(!super::is_recoverable(
+            &spec_622, &vec![ChunkPosition::Data(0),
+                             ChunkPosition::LocalParity(0),
+                             ChunkPosition::GlobalParity(0),
+                             ChunkPosition::GlobalParity(1)]));
+
+        // Two erasures in second locality
+        assert!(!super::is_recoverable(
+            &spec_622, &vec![ChunkPosition::Data(3),
+                             ChunkPosition::LocalParity(1),
+                             ChunkPosition::GlobalParity(0),
+                             ChunkPosition::GlobalParity(1)]));
+
+        /*
         for e1 in 0..possible_erasures.len() {
             for e2 in 0..possible_erasures.len() {
                 for e3 in 0..possible_erasures.len() {
                     for e4 in 0..possible_erasures.len() {
-                        if e1 != e2 && e1 != e3 && e1 != e4 && e2 != e3 && e2 != e4 && e3 != e4{
+                        if e1 != e2 && e1 != e3 && e1 != e4 && e2 != e3 && e2 != e4 && e3 != e4 {
+
+                            
                         assert!(super::is_recoverable(
                             &spec_622,
                             &vec![possible_erasures[e1].clone(),
@@ -212,6 +263,7 @@ mod tests {
                     }
                 }
             }
-        }        
+        } 
+         */       
     }
 }
