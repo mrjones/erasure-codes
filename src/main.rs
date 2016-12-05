@@ -1,4 +1,16 @@
-struct CodeSpec {
+// TODO: http://web.eecs.utk.edu/~plank/plank/papers/FAST-2013-GF.pdf
+
+// Generalized Pyramid Codes:
+// http://research.microsoft.com/en-us/um/people/chengh/papers/pyramid-tos13.pdf
+// Page 3:15
+pub struct GPCSpec {
+    rows: i32,
+    cols: i32,
+    parities_per_row: i32,
+    parities_per_col: i32,
+}
+
+pub struct CodeSpec {
     data_chunks: i32,
     local_parities: i32,
     global_parities: i32,
@@ -18,6 +30,7 @@ enum ChunkPosition{
 #[derive(Debug)]
 pub enum CodeError {
     InvalidCode,
+    MalformedData,
 }
 
 impl std::fmt::Display for CodeError {
@@ -25,6 +38,9 @@ impl std::fmt::Display for CodeError {
         match *self {
             CodeError::InvalidCode => {
                 try!(write!(f, "Invalid code"));
+            },
+            CodeError::MalformedData => {
+                try!(write!(f, "Malformed data"));
             },
         }
 
@@ -36,11 +52,90 @@ impl std::error::Error for CodeError {
     fn description(&self) -> &str {
         match *self {
             CodeError::InvalidCode => "InvalidCode",
+            CodeError::MalformedData => "MalformedData",
         }
     }
 }
 
 type CodeResult<T> = std::result::Result<T, CodeError>;
+
+pub struct CodeWords {
+    local_parities: Vec<Vec<u8>>,
+    global_parities: Vec<Vec<u8>>,
+}
+
+pub fn encode(spec: &CodeSpec, data_chunks: &Vec<Vec<u8>>) -> CodeResult<CodeWords> {
+    if spec.data_chunks != (data_chunks.len() as i32) {
+        return Err(CodeError::MalformedData);
+    }
+
+    let mut code_words = CodeWords{
+        local_parities: vec![vec![]; spec.local_parities as usize],
+        global_parities: vec![vec![]; spec.global_parities as usize],
+    };
+
+    for di in 0..data_chunks.len() {
+        let lpi = local_parity_for_data_chunk(spec, di as i32);
+        let data_chunk = &data_chunks[di];
+        let acc: Vec<u8>;
+        if code_words.local_parities[lpi as usize].len() > 0 {
+            acc = code_words.local_parities[lpi as usize].clone();
+        } else {
+            acc = vec![0; data_chunk.len()];
+        };
+
+        code_words.local_parities[lpi as usize] =
+            acc.iter().zip(data_chunk.iter()).map(|(x1, x2)| x1 ^ x2).collect();
+    }
+
+    
+    
+    return Ok(code_words);
+}
+
+// Returns true for entries which will always be zero
+fn generate_gzero(spec: &GPCSpec) -> Vec<Vec<bool>> {
+    let total_data_chunks = spec.rows * spec.cols;
+    let total_row_parities = spec.rows * spec.parities_per_row;
+    let total_col_parities = spec.rows * spec.parities_per_col;
+    let total_all_chunks = total_data_chunks + total_row_parities + total_col_parities;
+
+    let mut gzero = vec![vec![false; total_data_chunks as usize]; total_all_chunks as usize];
+    for row in 0..total_all_chunks {
+        for col in 0..total_data_chunks {
+            if row < total_data_chunks {
+                // Data row
+                gzero[row as usize][col as usize] = false;
+            } else if row < total_data_chunks + total_row_parities {
+                // Row parity
+                let row_parity_index = row - total_data_chunks;
+                let row_index = row_parity_index / spec.parities_per_row;
+                gzero[row as usize][col as usize] =
+                    (col < (row_index * spec.cols)) ||
+                    (col >= ((row_index + 1) * spec.cols));
+            } else {
+                // Col parity
+                let col_parity_index = row - (total_data_chunks + total_row_parities);
+                let col_index = col_parity_index / spec.parities_per_col;
+                gzero[row as usize][col as usize] =
+                    (col % spec.cols) != col_index;
+            }
+        }
+    }
+
+    return gzero;
+}
+
+// TODO(mrjones): u8 is good for GF(2^8). What about bigger fields?
+fn global_coefficients(spec: &CodeSpec) -> Vec<Vec<u8>> {
+    // Actually Generalized Pyramid Codes:
+    // http://research.microsoft.com/en-us/um/people/chengh/papers/pyramid-tos13.pdf
+    // Page 3:18
+    let k = spec.data_chunks;
+    let n = spec.data_chunks + spec.local_parities + spec.global_parities;
+
+    panic!();
+}
 
 fn local_parity_coverage(spec: &CodeSpec) -> CodeResult<std::collections::HashMap<LocalParityIndex, Vec<DataChunkIndex>>> {
     if spec.data_chunks % spec.local_parities != 0 {
@@ -122,6 +217,7 @@ mod tests {
 
     use super::ChunkPosition;
     use super::CodeSpec;
+    use super::GPCSpec;
 
     #[test]
     fn test_local_parity_coverage() {
@@ -251,30 +347,101 @@ mod tests {
                              ChunkPosition::Data(4),
                              ChunkPosition::GlobalParity(0),
                              ChunkPosition::GlobalParity(1)]));
-        /*
-        for e1 in 0..possible_erasures.len() {
-            for e2 in 0..possible_erasures.len() {
-                for e3 in 0..possible_erasures.len() {
-                    for e4 in 0..possible_erasures.len() {
-                        if e1 != e2 && e1 != e3 && e1 != e4 && e2 != e3 && e2 != e4 && e3 != e4 {
+    }
 
-                            
-                        assert!(super::is_recoverable(
-                            &spec_622,
-                            &vec![possible_erasures[e1].clone(),
-                                  possible_erasures[e2].clone(),
-                                  possible_erasures[e3].clone(),
-                                  possible_erasures[e4].clone()]),
-                                "Couldn't recover {:?} {:?} {:?} {:?}",
-                                possible_erasures[e1].clone(),
-                                possible_erasures[e2].clone(),
-                                possible_erasures[e3].clone(),
-                                possible_erasures[e4].clone());
-                        }
-                    }
-                }
-            }
-        } 
-         */       
+    #[test]
+    fn test_encode() {
+        let spec_622 = CodeSpec {
+            data_chunks: 6,
+            local_parities: 2,
+            global_parities: 2,
+        };
+
+        assert!(super::is_recoverable(&spec_622, &vec![]));
+
+        let data = vec![
+            vec![0b00000001],
+            vec![0b00000010],
+            vec![0b00000100],
+            vec![0b00001000],
+            vec![0b00010000],
+            vec![0b00100000],
+        ];
+        
+        let code_word = super::encode(&spec_622, &data).expect("encode");
+
+        assert_eq!(vec![0b00000111], code_word.local_parities[0]);
+        assert_eq!(vec![0b00111000], code_word.local_parities[1]);
+    }
+
+    #[test]
+    fn test_gpc_gzero_2x2_1_1() {
+        let spec_2x2_1_1 = GPCSpec{
+            rows: 2,
+            cols: 2,
+            parities_per_row: 1,
+            parities_per_col: 1,
+        };
+
+        assert_eq!(
+            vec![
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, true,  true],
+                vec![true,  true,  false, false],
+                vec![false, true,  false, true],
+                vec![true,  false, true,  false],
+            ],
+            super::generate_gzero(&spec_2x2_1_1));
+    }
+
+    fn test_gpc_gzero_2x2_2_1() {
+        let spec_2x2_1_1 = GPCSpec{
+            rows: 2,
+            cols: 2,
+            parities_per_row: 2,
+            parities_per_col: 1,
+        };
+
+        assert_eq!(
+            vec![
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, true,  true],
+                vec![false, false, true,  true],
+                vec![true,  true,  false, false],
+                vec![true,  true,  false, false],
+                vec![false, true,  false, true],
+                vec![true,  false, true,  false],
+            ],
+            super::generate_gzero(&spec_2x2_1_1));
+    }
+
+    fn test_gpc_gzero_2x2_1_2() {
+        let spec_2x2_1_1 = GPCSpec{
+            rows: 2,
+            cols: 2,
+            parities_per_row: 1,
+            parities_per_col: 2,
+        };
+
+        assert_eq!(
+            vec![
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, false, false],
+                vec![false, false, true,  true],
+                vec![true,  true,  false, false],
+                vec![false, true,  false, true],
+                vec![false, true,  false, true],
+                vec![true,  false, true,  false],
+                vec![true,  false, true,  false],
+            ],
+            super::generate_gzero(&spec_2x2_1_1));
     }
 }
