@@ -210,7 +210,8 @@ fn generate_g(spec: &GPCSpec) -> Vec<Vec<u8>> {
         // Randomize row, keeping must-be-zero entries as 0
         for t in 0..total_data_chunks {
             if !gzero[m as usize][t as usize] {
-                g[m as usize][t as usize] = rng.gen::<u8>();
+                //                g[m as usize][t as usize] = rng.gen::<u8>();
+                g[m as usize][t as usize] = 1;
             }
         }
 
@@ -226,11 +227,13 @@ fn generate_g(spec: &GPCSpec) -> Vec<Vec<u8>> {
 
             let mut ebads = std::collections::HashSet::new();
             let mut uu = vec![];
-            for i in 0..j-1 {
-                let d = v_dot(&u[i as usize], &u[j as usize]);
-                uu.push(d);
-                if d != 0 {
-                    ebads.insert((ug[i as usize] / uu[i as usize]) as u8);
+            if j > 0 {
+                for i in 0..(j-1) {
+                    let d = v_dot(&u[i as usize], &u[j as usize]);
+                    uu.push(d);
+                    if d != 0 {
+                        ebads.insert((ug[i as usize] / uu[i as usize]) as u8);
+                    }
                 }
             }
 
@@ -262,13 +265,12 @@ fn generate_g(spec: &GPCSpec) -> Vec<Vec<u8>> {
 
             ug[j] = v_dot(&u[j], &g[m as usize]);
 
-            /*
             for si in 0..g.len() {
                 for sj in si..g.len() {
                     // S' is G withour row si or sj:
 
                     // TODO(mrjones): don't copy so much!
-                    let s_prime = vec![];
+                    let mut s_prime = vec![];
                     for i in 0..g.len() {
                         if i != si && i != sj {
                             s_prime.push(&g[i]);
@@ -276,12 +278,13 @@ fn generate_g(spec: &GPCSpec) -> Vec<Vec<u8>> {
                     }
                     s_prime.push(&g[m as usize]);
 
-                    if rank(&s_prime) == (total_data_chunks - 1) as usize {
-                        u.push(null_space(s_prime));
+                    let m = to_matrix(&s_prime);
+                    let svd = la::SVD::new(&m);
+                    if rank(&svd) == (total_data_chunks - 1) as usize {
+                        u.push(one_null_basis(&svd));
                     }
                 }
             }
-             */
         }
     }
 
@@ -676,5 +679,16 @@ mod tests {
         let m = vec![&r1, &r2, &r3];
 
         assert_eq!(vec![0, 0, 1], super::one_null_basis_wrapper(&m));
+    }
+
+    #[test]
+    fn test_generate_g() {
+        let expected: Vec<Vec<u8>> = vec![];
+        assert_eq!(expected, super::generate_g(&super::GPCSpec{
+            rows: 2,
+            cols: 2,
+            parities_per_row: 1,
+            parities_per_col: 1,
+        }));
     }
 }
