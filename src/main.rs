@@ -1,5 +1,10 @@
 // TODO: http://web.eecs.utk.edu/~plank/plank/papers/FAST-2013-GF.pdf
 
+extern crate la;
+extern crate rand;
+
+use rand::Rng;
+
 // Generalized Pyramid Codes:
 // http://research.microsoft.com/en-us/um/people/chengh/papers/pyramid-tos13.pdf
 // Page 3:15
@@ -93,6 +98,197 @@ pub fn encode(spec: &CodeSpec, data_chunks: &Vec<Vec<u8>>) -> CodeResult<CodeWor
     return Ok(code_words);
 }
 
+// Should dot be within the field?
+// TODO(mrjones): templatize for other fields
+fn v_dot(a: &Vec<u8>, b: &Vec<u8>) -> u64 {
+    // TODO(mrjones): use zip
+    assert_eq!(a.len(), b.len());
+    let mut dot = 0;
+    for i in 0..a.len() {
+        dot += (a[i] as u64) * (b[i] as u64);
+    }
+    return dot;
+}
+
+// TODO(mrjones): u8 overflow?
+fn v_add(a: &Vec<u8>, b: &Vec<u8>) -> Vec<u8> {
+    return a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
+}
+
+fn v_add_c(a: &Vec<u8>, c: u8) -> Vec<u8> {
+    return a.iter().map(|x| x + c).collect();
+}
+
+fn v_mult(a: &Vec<u8>, b: &Vec<u8>) -> Vec<u8>{
+    return a.iter().zip(b.iter()).map(|(x, y)| x * y).collect();
+}
+
+fn v_mult_c(a: &Vec<u8>, c: u8) -> Vec<u8>{
+    return a.iter().map(|x| x * c).collect();
+}
+
+fn to_matrix(a: &Vec<&Vec<u8>>) -> la::Matrix<f32> {
+    assert!(a.len() > 0);
+
+    let mut d = vec![0.0; a.len() * a[0].len()];
+    let mut i = 0;
+    for r in 0..a.len() {
+        for c in 0..a[r].len() {
+            d[i] = a[r][c] as f32;
+            i = i+1;
+        }
+    }
+
+    return la::Matrix::new(a.len(), a[0].len(), d);
+}
+
+fn rank(svd: &la::SVD<f32>) -> usize {
+    let mut rank = 0;
+    let count = std::cmp::min(svd.get_s().rows(), svd.get_s().cols());
+    for i in 0..count {
+        if *svd.get_s().get_ref(i, i) > 0.0 {
+            rank = rank + 1
+        }
+    }
+
+    return rank    
+}
+
+fn one_null_basis(svd: &la::SVD<f32>) -> Vec<u8> {
+    let count = std::cmp::min(svd.get_s().rows(), svd.get_s().cols());
+    assert!(0.1 > *svd.get_s().get_ref(count - 1, count - 1));
+    assert!(-0.1 < *svd.get_s().get_ref(count - 1, count - 1));
+
+    let mut null_basis = vec![];
+    for r in 0..count {
+        null_basis.push(*svd.get_u().get_ref(r, count - 1) as u8);
+    }
+
+    return null_basis;
+}
+
+fn one_null_basis_wrapper(a: &Vec<&Vec<u8>>) -> Vec<u8> {
+    if a.len() == 0 {
+        return vec![];
+    }
+    let m = to_matrix(a);
+    let svd = la::SVD::new(&m);
+    return one_null_basis(&svd);    
+}
+
+fn rank_wrapper(a: &Vec<&Vec<u8>>) -> usize {
+    if a.len() == 0 {
+        return 0;
+    }
+    let m = to_matrix(a);
+
+    let svd = la::SVD::new(&m);
+    return rank(&svd);
+}
+
+fn generate_g(spec: &GPCSpec) -> Vec<Vec<u8>> {
+    let total_data_chunks = spec.rows * spec.cols;
+    let total_row_parities = spec.rows * spec.parities_per_row;
+    let total_col_parities = spec.rows * spec.parities_per_col;
+    let total_all_chunks = total_data_chunks + total_row_parities + total_col_parities;
+
+    let mut rng = rand::thread_rng();
+    
+    // http://research.microsoft.com/en-us/um/people/chengh/papers/pyramid-tos13.pdf
+    // Page 3:18
+    let mut g = vec![vec![0; total_data_chunks as usize]; total_all_chunks as usize];
+    let mut u = vec![vec![0; total_data_chunks as usize]; total_all_chunks as usize];
+    let gzero = generate_gzero(spec);
+
+    // G and U start as KxK identity matrix
+    for row in 0..total_data_chunks {
+        g[row as usize][row as usize] = 1;
+        u[row as usize][row as usize] = 1;
+    }
+
+    for m in total_data_chunks..total_all_chunks {
+        // Randomize row, keeping must-be-zero entries as 0
+        for t in 0..total_data_chunks {
+            if !gzero[m as usize][t as usize] {
+                g[m as usize][t as usize] = rng.gen::<u8>();
+            }
+        }
+
+        let mut ug = vec![];
+        for j in 0..u.len() {
+            let d = v_dot(&g[m as usize], &u[j as usize]);
+            if d != 0 {
+                ug.push(d);
+            }
+
+            // TODO(mrjones): what does this mean?
+            // if v_dot(u[j], g[m]) === 0, then ug[j] = 0
+
+            let mut ebads = std::collections::HashSet::new();
+            let mut uu = vec![];
+            for i in 0..j-1 {
+                let d = v_dot(&u[i as usize], &u[j as usize]);
+                uu.push(d);
+                if d != 0 {
+                    ebads.insert((ug[i as usize] / uu[i as usize]) as u8);
+                }
+            }
+
+            let mut e: u8 = 0;
+            let e_max = 255 as u8; // TODO(mrjones): compute this based on field size
+            let mut found = false;
+            for e_candidate in 0..e_max {
+                if !ebads.contains(&e_candidate) {
+                    e = e_candidate;
+                    found = true;
+                    break;
+                }
+            }
+            assert!(found);
+            
+            g[m as usize] = v_add(&g[m as usize], &v_mult_c(&u[j as usize], e));
+
+            for i in 0..j {
+                // TODO: What field is this over?
+                ug[i] = ug[i] + e as u64 * uu[i];
+            }
+
+            // TODO: This is unnecessary, right?
+            for t in 0..total_data_chunks {
+                if gzero[m as usize][t as usize] {
+                    g[m as usize][t as usize] = 0;
+                }
+            }
+
+            ug[j] = v_dot(&u[j], &g[m as usize]);
+
+            /*
+            for si in 0..g.len() {
+                for sj in si..g.len() {
+                    // S' is G withour row si or sj:
+
+                    // TODO(mrjones): don't copy so much!
+                    let s_prime = vec![];
+                    for i in 0..g.len() {
+                        if i != si && i != sj {
+                            s_prime.push(&g[i]);
+                        }
+                    }
+                    s_prime.push(&g[m as usize]);
+
+                    if rank(&s_prime) == (total_data_chunks - 1) as usize {
+                        u.push(null_space(s_prime));
+                    }
+                }
+            }
+             */
+        }
+    }
+
+
+    return g;
+}
+
 // Returns true for entries which will always be zero
 fn generate_gzero(spec: &GPCSpec) -> Vec<Vec<bool>> {
     let total_data_chunks = spec.rows * spec.cols;
@@ -129,8 +325,6 @@ fn generate_gzero(spec: &GPCSpec) -> Vec<Vec<bool>> {
 // TODO(mrjones): u8 is good for GF(2^8). What about bigger fields?
 fn global_coefficients(spec: &CodeSpec) -> Vec<Vec<u8>> {
     // Actually Generalized Pyramid Codes:
-    // http://research.microsoft.com/en-us/um/people/chengh/papers/pyramid-tos13.pdf
-    // Page 3:18
     let k = spec.data_chunks;
     let n = spec.data_chunks + spec.local_parities + spec.global_parities;
 
@@ -443,5 +637,44 @@ mod tests {
                 vec![true,  false, true,  false],
             ],
             super::generate_gzero(&spec_2x2_1_1));
+    }
+
+    
+    #[test]
+    fn test_rank_1() {
+        let r1 = vec![1, 0];
+        let r2 = vec![0, 1];
+        let m = vec![&r1, &r2];
+
+        assert_eq!(2, super::rank_wrapper(&m));
+    }
+
+    #[test]
+    fn test_rank_2() {
+        let r1 = vec![1, 0];
+        let r2 = vec![1, 0];
+        let m = vec![&r1, &r2];
+
+        assert_eq!(1, super::rank_wrapper(&m));
+    }
+
+    #[test]
+    fn test_rank_3() {
+        let r1 = vec![1, 0, 0];
+        let r2 = vec![0, 1, 0];
+        let r3 = vec![0, 2, 0];
+        let m = vec![&r1, &r2, &r3];
+
+        assert_eq!(2, super::rank_wrapper(&m));
+    }
+
+    #[test]
+    fn test_one_null_basis() {
+        let r1 = vec![1, 0, 0];
+        let r2 = vec![0, 1, 0];
+        let r3 = vec![0, 0, 0];
+        let m = vec![&r1, &r2, &r3];
+
+        assert_eq!(vec![0, 0, 1], super::one_null_basis_wrapper(&m));
     }
 }
